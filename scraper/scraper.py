@@ -1,97 +1,138 @@
 # scraper/scraper.py
 
+import os
+import re
 import requests
 from bs4 import BeautifulSoup
-import os
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from tqdm import tqdm
-import config  # Import cấu hình từ config.py
+import config # Import cấu hình từ config.py
 
-def scrape_images_from_fuoverflow():
-    """
-    Hàm chính để cào và tải ảnh từ URL được cấu hình trong config.py.
-    """
-    # Lấy thông tin từ file config
-    page_url = config.TARGET_URL
-    cookies = config.COOKIES
-    save_dir = config.SAVE_DIRECTORY
-    
-    # Kiểm tra xem người dùng đã nhập cookie chưa
-    if not cookies:
-        print("Lỗi: Chuỗi cookie chưa được cấu hình trong file 'config.py'.")
-        print("Vui lòng làm theo hướng dẫn trong file config.py để thêm cookie.")
-        return
+def sanitize_filename(name: str) -> str:
+    """Làm sạch tên file/thư mục để loại bỏ các ký tự không hợp lệ."""
+    # Xóa các tiền tố không cần thiết để tên thư mục gọn hơn
+    name = re.sub(r'^\s*Đề Thi [A-Z]+\s*-\s*', '', name, flags=re.IGNORECASE)
+    name = re.sub(r'^[a-zA-Z0-9]+\s*-\s*', '', name, flags=re.IGNORECASE)
+    return re.sub(r'[\\/*?:"<>|]', "_", name).strip()
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-
-    # Tạo thư mục lưu ảnh nếu chưa có
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-
-    print(f"Đang truy cập trang: {page_url}")
-    
+def get_latest_thread_info(session, limit: int) -> list[dict]:
+    """Lấy thông tin (URL và tiêu đề) của các đề thi mới nhất."""
+    print(f"[*] Đang truy cập trang môn học: {config.FORUM_URL}")
     try:
-        # Gửi request với cookie và header
-        response = requests.get(page_url, headers=headers, cookies=cookies)
-        response.raise_for_status() # Báo lỗi nếu request thất bại (vd: 403, 404, 500)
-
+        response = session.get(config.FORUM_URL, timeout=15)
+        response.raise_for_status()
+        
         soup = BeautifulSoup(response.text, 'html.parser')
+        thread_items = soup.select('div.structItem.structItem--thread')
+        
+        if not thread_items:
+            print("(!) Không tìm thấy danh sách đề thi. Kiểm tra lại URL môn học hoặc cookie.")
+            return []
 
-        # Selector chính xác để lấy link chứa ảnh gốc
-        image_links = soup.select('ul.attachmentList a.file-preview.js-lbImage')
+        print(f"[+] Tìm thấy {len(thread_items)} đề thi trên trang đầu tiên.")
+        
+        threads_info = []
+        for item in thread_items[:limit]:
+            title_tag = item.select_one('div.structItem-title > a[data-tp-primary="on"]')
+            if title_tag and title_tag.has_attr('href'):
+                threads_info.append({
+                    'url': urljoin(config.FORUM_URL, title_tag['href']),
+                    'title': title_tag.text.strip()
+                })
+        
+        return threads_info
+        
+    except requests.exceptions.RequestException as e:
+        print(f"(!) Lỗi kết nối đến trang môn học: {e}")
+        return []
 
-        if not image_links:
-            print("Không tìm thấy link ảnh nào. Vui lòng kiểm tra lại:")
-            print("- URL trong config.py có đúng không.")
-            print("- Cookie đăng nhập còn hợp lệ không.")
+def download_images_from_thread(session, thread_info: dict):
+    """Tải tất cả hình ảnh từ một URL đề thi và lưu vào thư mục riêng."""
+    thread_url = thread_info['url']
+    folder_name = sanitize_filename(thread_info['title'])
+    thread_save_path = os.path.join(config.SAVE_DIRECTORY, folder_name)
+    os.makedirs(thread_save_path, exist_ok=True)
+    
+    print(f"\n--- Đang xử lý đề: '{thread_info['title']}' ---")
+    print(f"    Lưu tại: {thread_save_path}")
+
+    try:
+        response = session.get(thread_url, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        attachment_links = soup.select('ul.attachmentList a.file-preview.js-lbImage')
+        
+        if not attachment_links:
+            print("    -> Không tìm thấy ảnh đính kèm nào trong đề thi này.")
             return
 
-        print(f"Tìm thấy {len(image_links)} ảnh. Bắt đầu tải về thư mục '{save_dir}'...")
-
-        # Dùng tqdm để tạo thanh tiến trình
-        for link in tqdm(image_links, desc="Đang tải ảnh", unit="ảnh"):
-            relative_url = link.get('href')
-            if not relative_url:
+        print(f"    -> Tìm thấy {len(attachment_links)} ảnh đính kèm. Bắt đầu tải...")
+        
+        download_count = 0
+        for link in tqdm(attachment_links, desc="    Tải ảnh", unit="ảnh", leave=False):
+            if not link.has_attr('href'):
                 continue
-
-            # Nối với domain để tạo URL tuyệt đối
-            full_image_url = urljoin(page_url, relative_url)
-
+            
+            direct_image_url = urljoin(thread_url, link['href'])
+            
             try:
-                # Lấy tên file từ thẻ span bên trong
                 filename_span = link.find('span', class_='file-name')
-                if filename_span:
-                    filename = filename_span.text.strip()
-                else:
-                    # Phương án dự phòng nếu không tìm thấy span
-                    filename = os.path.basename(urlparse(relative_url).path)
-
-                save_path = os.path.join(save_dir, filename)
+                filename = sanitize_filename(filename_span.text.strip()) if filename_span else "unknown_image.jpg"
+                save_path = os.path.join(thread_save_path, filename)
                 
-                # Bỏ qua nếu file đã tồn tại
                 if os.path.exists(save_path):
                     continue
 
-                # Tải nội dung ảnh
-                img_response = requests.get(full_image_url, headers=headers, cookies=cookies, stream=True)
-                img_response.raise_for_status()
-
-                # Lưu file
+                # **SỬA LỖI QUAN TRỌNG: Thêm 'Referer' header**
+                # Header này báo cho server biết ta đang truy cập từ trang đề thi
+                download_headers = session.headers.copy()
+                download_headers['Referer'] = thread_url
+                
+                img_data_response = session.get(direct_image_url, timeout=20, stream=True, headers=download_headers)
+                img_data_response.raise_for_status()
+                
                 with open(save_path, 'wb') as f:
-                    for chunk in img_response.iter_content(chunk_size=8192):
+                    for chunk in img_data_response.iter_content(chunk_size=8192):
                         f.write(chunk)
+                download_count += 1
             
             except requests.exceptions.RequestException as e:
-                tqdm.write(f"\nLỗi khi tải ảnh {full_image_url}: {e}") # Dùng tqdm.write để không làm hỏng progress bar
-
-        print(f"\nHoàn tất! Tất cả ảnh đã được kiểm tra và tải về thành công.")
+                tqdm.write(f"\n    - Lỗi khi tải ảnh {direct_image_url}: {e}")
+        
+        print(f"    -> Hoàn tất. Đã tải mới {download_count}/{len(attachment_links)} ảnh.")
 
     except requests.exceptions.RequestException as e:
-        print(f"\nLỗi nghiêm trọng khi truy cập URL {page_url}: {e}")
-        print("Hãy chắc chắn rằng bạn đã kết nối internet và cookie là chính xác.")
+        print(f"(!) Lỗi khi truy cập vào đề thi {thread_url}: {e}")
 
-# Đoạn này cho phép chạy file trực tiếp bằng lệnh `python -m scraper.scraper`
+def main():
+    """Hàm chính điều khiển toàn bộ quá trình."""
+    print("--- BẮT ĐẦU CHƯƠNG TRÌNH CÀO ẢNH FUOVERFLOW ---")
+    if not config.COOKIES:
+        print("(!) Lỗi: Cookie chưa được cấu hình trong file 'config.py'. Vui lòng kiểm tra lại.")
+        return
+    
+    session = requests.Session()
+    session.cookies.update(config.COOKIES)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
+    
+    os.makedirs(config.SAVE_DIRECTORY, exist_ok=True)
+    
+    latest_threads = get_latest_thread_info(session, limit=config.THREAD_LIMIT)
+    
+    if not latest_threads:
+        print("\n(!) Không thể lấy danh sách đề thi. Chương trình kết thúc.")
+        return
+        
+    print(f"\n[*] Sẽ tiến hành cào ảnh từ {len(latest_threads)} đề thi mới nhất.")
+    
+    for thread_info in latest_threads:
+        download_images_from_thread(session, thread_info)
+        
+    print("\n--- HOÀN TẤT TOÀN BỘ QUÁ TRÌNH ---")
+    print(f"Tất cả ảnh đã được lưu trong thư mục: '{os.path.abspath(config.SAVE_DIRECTORY)}'")
+
 if __name__ == "__main__":
-    scrape_images_from_fuoverflow()
+    main()
