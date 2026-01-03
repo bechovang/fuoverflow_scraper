@@ -1,23 +1,40 @@
-# FuOverflow Image Scraper
+# FuOverflow Exam Scraper v1.0
 
-Dự án này là một script Python dùng để tự động tải về tất cả các ảnh đính kèm từ một trang thread cụ thể trên diễn đàn FuOverflow Community.
+Dự án này là một script Python tự động tải về ảnh đề thi, comments/đáp án và tạo file PDF từ các thread trên diễn đàn FuOverflow Community.
 
-## Tính năng
+**Version:** 1.0  
+**Last Updated:** 2025  
+**Status:** ✅ Stable
 
-- ✅ Tải về ảnh gốc với chất lượng đầy đủ, không phải ảnh thumbnail.
-- ✅ **MỚI**: Tự động trích xuất và lưu comments/đáp án từ mỗi câu hỏi.
-- ✅ **MỚI**: Sử dụng JSON API để lấy dữ liệu chính xác và nhanh hơn.
-- ✅ **MỚI**: Tự động tạo file PDF với format: trang lẻ = câu hỏi, trang chẵn = đáp án.
-- ✅ Xử lý xác thực (đăng nhập) thông qua việc sử dụng cookie từ trình duyệt.
-- ✅ Lưu trữ ảnh và comments vào thư mục được chỉ định.
-- ✅ Hiển thị thanh tiến trình (progress bar) trong quá trình tải.
-- ✅ Cấu trúc code sạch sẽ, dễ dàng mở rộng.
+## ✨ Tính năng v1.0
+
+### Core Features
+- ✅ **Tải ảnh đề thi**: Tải về ảnh gốc chất lượng cao, không phải thumbnail
+- ✅ **Trích xuất comments/đáp án**: Tự động lấy tất cả bình luận từ mỗi câu hỏi
+- ✅ **JSON API Integration**: Sử dụng JSON API chính thức của XenForo để lấy dữ liệu chính xác
+- ✅ **CSRF Token Support**: Tự động xử lý CSRF token để tránh lỗi 400 Bad Request
+- ✅ **Tự động tạo PDF**: Tạo file PDF với format chuyên nghiệp
+  - Trang lẻ (1, 3, 5...): Hiển thị câu hỏi (ảnh đề thi)
+  - Trang chẵn (2, 4, 6...): Hiển thị đáp án và bình luận
+
+### Performance & UX
+- ✅ **Smart Skip**: Tự động bỏ qua file đã tồn tại, không gọi API không cần thiết
+- ✅ **Progress Bar**: Hiển thị thanh tiến trình với tqdm
+- ✅ **Error Handling**: Xử lý lỗi tốt, thông báo rõ ràng
+- ✅ **Unicode Font Support**: Tự động tải font Unicode để hiển thị tiếng Việt trong PDF
+
+### Security & Reliability
+- ✅ **Cookie-based Authentication**: Xác thực qua cookie từ trình duyệt
+- ✅ **Rate Limiting**: Tự động nghỉ giữa các request để tránh bị ban
+- ✅ **Retry Logic**: Xử lý lỗi và retry khi cần
 
 ## Hướng dẫn cài đặt và sử dụng
 
-### 1. Chuẩn bị
+### 1. Yêu cầu hệ thống
 
-- Đã cài đặt Python 3.7+ trên máy.
+- **Python**: 3.7 trở lên
+- **OS**: Windows, macOS, hoặc Linux
+- **Dependencies**: Xem `requirements.txt`
 
 ### 2. Cài đặt
 
@@ -69,6 +86,11 @@ Sau khi cài đặt và cấu hình xong, chạy script bằng lệnh sau từ t
 python -m scraper.scraper
 ```
 
+**Lưu ý:** Script sẽ tự động:
+- Tạo thư mục `downloaded_images` nếu chưa có
+- Bỏ qua file đã tồn tại (không tải lại)
+- Tự động tạo PDF sau khi cào xong (nếu `GENERATE_PDF = True`)
+
 ## Kết quả
 
 Sau khi chạy script, bạn sẽ có:
@@ -83,17 +105,110 @@ Sau khi chạy script, bạn sẽ có:
 ```
 downloaded_images/
 └── [Tên đề thi]/
-    ├── question_1.jpg
-    ├── question_2.jpg
+    ├── question_1.jpg          # Ảnh câu hỏi 1
+    ├── question_2.jpg          # Ảnh câu hỏi 2
     ├── ...
-    ├── comments.json
-    └── [Tên đề thi].pdf
+    ├── comments.json            # Tất cả comments/đáp án (JSON format)
+    └── [Tên đề thi].pdf         # File PDF tổng hợp
 ```
-Disclaimer
-Script này được tạo ra cho mục đích học tập và sao lưu dữ liệu cá nhân. Vui lòng tôn trọng điều khoản dịch vụ của trang web FuOverflow và không sử dụng nó cho các mục đích xấu.
-Generated code
+
+## 🔧 Troubleshooting
+
+### Lỗi thường gặp
+
+#### 1. Lỗi 400 Bad Request
+**Nguyên nhân:** CSRF token hết hạn hoặc cookie không hợp lệ  
+**Giải pháp:**
+- Cập nhật cookie mới nhất trong `config.py`
+- Đảm bảo `xf_session` và `xf_user` trong cookie còn hiệu lực
+- Script sẽ tự động lấy CSRF token, nhưng cần cookie hợp lệ
+
+#### 2. Lỗi font PDF (Character outside range)
+**Nguyên nhân:** Font không hỗ trợ tiếng Việt  
+**Giải pháp:**
+- Script sẽ tự động tải font DejaVu nếu cần
+- Hoặc đặt `PDF_FONT_PATH` trong `config.py` trỏ đến font Unicode (ví dụ: `C:\Windows\Fonts\arialuni.ttf`)
+
+#### 3. Không tìm thấy media items
+**Nguyên nhân:** URL sai hoặc cookie không có quyền truy cập  
+**Giải pháp:**
+- Kiểm tra lại `FORUM_URL` trong `config.py`
+- Đảm bảo bạn đã đăng nhập và có quyền xem thread đó
+- Kiểm tra cookie có đầy đủ không
+
+#### 4. Script chạy chậm
+**Nguyên nhân:** Nhiều request, delay giữa các request  
+**Giải pháp:**
+- Giảm `DELAY_BETWEEN_REQUESTS` trong `config.py` (nhưng không nên < 1 giây)
+- File đã tồn tại sẽ được skip nhanh, không cần lo
+
+## 📝 Maintenance
+
+### Cập nhật cookie định kỳ
+Cookie có thể hết hạn sau một thời gian. Nên cập nhật cookie mới nhất trong `config.py` mỗi khi:
+- Gặp lỗi 400 Bad Request
+- Script không thể truy cập thread
+- Cookie đã cũ (thường sau vài ngày/tuần)
+
+### Cấu trúc code
+```
+fuoverflow_scraper/
+├── config.py              # Cấu hình (URL, cookie, settings)
+├── main.py                # Script cũ (có thể bỏ qua)
+├── scraper/
+│   ├── __init__.py
+│   ├── scraper.py         # Main scraper logic
+│   ├── media_api.py       # JSON API handler & CSRF token
+│   └── pdf_generator.py   # PDF generation với Unicode support
+├── requirements.txt       # Dependencies
+└── README.md             # Tài liệu này
+```
+
+### Dependencies
+- `requests`: HTTP requests
+- `beautifulsoup4`: HTML parsing
+- `tqdm`: Progress bar
+- `fpdf2`: PDF generation
+- `Pillow`: Image processing
+
+### Cập nhật dependencies
+```bash
+pip install --upgrade -r requirements.txt
+```
+
+## ⚠️ Disclaimer
+
+Script này được tạo ra cho mục đích:
+- ✅ Học tập và nghiên cứu
+- ✅ Sao lưu dữ liệu cá nhân
+- ✅ Tạo tài liệu ôn thi offline
+
+**Vui lòng:**
+- ❌ Không sử dụng để spam hoặc tải quá nhiều dữ liệu
+- ❌ Không chia sẻ cookie với người khác
+- ❌ Tôn trọng điều khoản dịch vụ của FuOverflow
+- ❌ Không sử dụng cho mục đích thương mại không được phép
+
+## 📄 License
+
+Dự án này chỉ dành cho mục đích giáo dục và cá nhân.
+
+## 🤝 Contributing
+
+Nếu bạn muốn đóng góp:
+1. Fork repository
+2. Tạo branch mới cho feature
+3. Commit changes
+4. Tạo Pull Request
+
+## 📧 Support
+
+Nếu gặp vấn đề, vui lòng:
+1. Kiểm tra phần Troubleshooting ở trên
+2. Kiểm tra cookie và URL trong `config.py`
+3. Xem log để tìm lỗi cụ thể
+
 ---
 
-#### **File: `requirements.txt`**
-
-File này giúp người khác có thể cài đặt chính xác các phiên bản thư viện mà bạn đã dùng.
+**Version 1.0** - Stable Release  
+*Last updated: 2025*
