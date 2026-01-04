@@ -5,6 +5,7 @@ import re
 import json
 import time
 import requests
+from typing import Optional
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from tqdm import tqdm
@@ -18,6 +19,51 @@ def sanitize_filename(name: str) -> str:
     name = re.sub(r'^\s*Đề Thi [A-Z]+\s*-\s*', '', name, flags=re.IGNORECASE)
     name = re.sub(r'^[a-zA-Z0-9]+\s*-\s*', '', name, flags=re.IGNORECASE)
     return re.sub(r'[\\/*?:"<>|]', "_", name).strip()
+
+def make_relative_path(absolute_path: str, base_dir: str = config.SAVE_DIRECTORY) -> Optional[str]:
+    """
+    Convert absolute path thành relative path từ base_dir.
+    
+    Args:
+        absolute_path: Đường dẫn tuyệt đối
+        base_dir: Thư mục base (mặc định: SAVE_DIRECTORY)
+    
+    Returns:
+        Đường dẫn tương đối (với / thay vì \), hoặc None nếu absolute_path là None
+    """
+    if not absolute_path:
+        return None
+    
+    abs_path = os.path.abspath(absolute_path)
+    abs_base = os.path.abspath(base_dir)
+    
+    try:
+        # Lấy relative path
+        rel_path = os.path.relpath(abs_path, abs_base)
+        # Normalize: convert \ thành / (để tương thích cross-platform)
+        rel_path = rel_path.replace('\\', '/')
+        return rel_path
+    except ValueError:
+        # Nếu không cùng drive (Windows), return absolute path
+        return absolute_path
+
+def get_absolute_path(relative_path: str, base_dir: str = config.SAVE_DIRECTORY) -> Optional[str]:
+    """
+    Convert relative path thành absolute path.
+    
+    Args:
+        relative_path: Đường dẫn tương đối
+        base_dir: Thư mục base (mặc định: SAVE_DIRECTORY)
+    
+    Returns:
+        Đường dẫn tuyệt đối, hoặc None nếu relative_path là None
+    """
+    if not relative_path:
+        return None
+    
+    abs_base = os.path.abspath(base_dir)
+    abs_path = os.path.join(abs_base, relative_path)
+    return os.path.normpath(abs_path)
 
 def get_latest_thread_info(session, limit: int) -> list[dict]:
     """Lấy thông tin (URL và tiêu đề) của các đề thi mới nhất."""
@@ -50,10 +96,28 @@ def get_latest_thread_info(session, limit: int) -> list[dict]:
         print(f"(!) Lỗi kết nối đến trang môn học: {e}")
         return []
 
-def download_images_with_comments_from_thread(session: requests.Session, thread_info: dict):
+def download_images_with_comments_from_thread(
+    session: requests.Session, 
+    thread_info: dict,
+    thread_db_id: Optional[int] = None
+) -> dict:
     """
     Tải tất cả hình ảnh và comments từ một URL đề thi sử dụng JSON API.
     Lưu ảnh và comments vào thư mục riêng, đồng thời tạo file JSON.
+    
+    Args:
+        session: requests.Session với cookies
+        thread_info: Dict chứa 'url' và 'title'
+        thread_db_id: ID của thread trong DB (optional, để tích hợp sau)
+    
+    Returns:
+        dict chứa:
+            - folder_path: Đường dẫn thư mục (relative)
+            - pdf_path: Đường dẫn file PDF (relative, None nếu không có)
+            - total_questions: Tổng số câu hỏi
+            - media_items_data: List các dict chứa thông tin media items
+            - success: bool
+            - error: str (nếu có lỗi)
     """
     thread_url = thread_info['url']
     folder_name = sanitize_filename(thread_info['title'])
@@ -63,14 +127,25 @@ def download_images_with_comments_from_thread(session: requests.Session, thread_
     print(f"\n--- Đang xử lý đề: '{thread_info['title']}' ---")
     print(f"    Lưu tại: {thread_save_path}")
 
+    result = {
+        'folder_path': None,
+        'pdf_path': None,
+        'total_questions': 0,
+        'media_items_data': [],
+        'success': False,
+        'error': None
+    }
+
     try:
         # Bước 1: Trích xuất Media IDs và CSRF token từ thread
         print("    [*] Đang trích xuất Media IDs và CSRF token...")
         media_items, csrf_token = extract_media_ids_from_thread(session, thread_url)
         
         if not media_items:
-            print("    -> Không tìm thấy media nào trong đề thi này.")
-            return
+            error_msg = "Không tìm thấy media nào trong đề thi này."
+            print(f"    -> {error_msg}")
+            result['error'] = error_msg
+            return result
         
         if not csrf_token:
             print("    (!) Cảnh báo: Không lấy được CSRF token. Có thể gặp lỗi 400 khi gọi API.")
@@ -105,7 +180,7 @@ def download_images_with_comments_from_thread(session: requests.Session, thread_
             file_ext = os.path.splitext(original_filename)[1] or '.jpg'
             safe_filename = sanitize_filename(original_filename) or f"question_{idx+1}{file_ext}"
             save_path = os.path.join(thread_save_path, safe_filename)
-            
+                
             # Kiểm tra file đã tồn tại chưa - Nếu có thì skip luôn, không gọi API
             if os.path.exists(save_path):
                 tqdm.write(f"    - Bỏ qua (đã tồn tại): {safe_filename}")
@@ -139,7 +214,7 @@ def download_images_with_comments_from_thread(session: requests.Session, thread_
                 tqdm.write(f"    - Bỏ qua media ID {media_id}: Không lấy được dữ liệu")
                 time.sleep(config.DELAY_BETWEEN_REQUESTS)
                 continue
-            
+
             # Tải ảnh về
             image_url = media_data.get('image_url')
             if image_url:
@@ -179,6 +254,7 @@ def download_images_with_comments_from_thread(session: requests.Session, thread_
         print(f"    [+] Đã lưu comments vào: comments.json")
         
         # Bước 4: Tạo PDF tự động sau khi cào xong
+        pdf_path = None
         if config.GENERATE_PDF:
             if all_question_data:
                 pdf_path = os.path.join(thread_save_path, f"{folder_name}.pdf")
@@ -189,17 +265,47 @@ def download_images_with_comments_from_thread(session: requests.Session, thread_
                 except Exception as e:
                     print(f"    (!) Lỗi khi tạo PDF: {e}")
                     print(f"    (!) Bạn vẫn có thể tạo PDF sau bằng file comments.json")
+                    pdf_path = None  # Set None nếu lỗi
             else:
                 print(f"    (!) Không có dữ liệu để tạo PDF. Kiểm tra lại quá trình cào dữ liệu.")
         else:
             print(f"    [*] PDF generation đã được tắt trong config (GENERATE_PDF = False)")
         
+        # Chuẩn bị data để return và lưu DB
+        media_items_data = []
+        for idx, q_data in enumerate(all_question_data):
+            media_items_data.append({
+                'media_id': q_data['media_id'],
+                'filename': os.path.basename(q_data['image_local_path']) if q_data.get('image_local_path') else None,
+                'image_path': make_relative_path(q_data.get('image_local_path')) if q_data.get('image_local_path') else None,
+                'image_url': q_data.get('image_url'),
+                'title': q_data.get('title'),
+                'comments': q_data.get('comments', []),
+                'question_order': idx + 1
+            })
+        
+        # Convert paths sang relative
+        result.update({
+            'folder_path': make_relative_path(thread_save_path),
+            'pdf_path': make_relative_path(pdf_path) if pdf_path else None,
+            'total_questions': len(all_question_data),
+            'media_items_data': media_items_data,
+            'success': True
+        })
+        
         print(f"\n    -> Hoàn tất. Đã xử lý {len(all_question_data)}/{len(media_items)} media items.")
+        return result
 
     except requests.exceptions.RequestException as e:
-        print(f"(!) Lỗi khi truy cập vào đề thi {thread_url}: {e}")
+        error_msg = f"Lỗi khi truy cập vào đề thi {thread_url}: {e}"
+        print(f"(!) {error_msg}")
+        result['error'] = error_msg
+        return result
     except Exception as e:
-        print(f"(!) Lỗi không xác định: {e}")
+        error_msg = f"Lỗi không xác định: {e}"
+        print(f"(!) {error_msg}")
+        result['error'] = error_msg
+        return result
 
 def main():
     """Hàm chính điều khiển toàn bộ quá trình."""
@@ -227,14 +333,14 @@ def main():
     else:
         # Là forum page, lấy danh sách threads
         latest_threads = get_latest_thread_info(session, limit=getattr(config, 'THREAD_LIMIT', 10))
+    
+    if not latest_threads:
+        print("\n(!) Không thể lấy danh sách đề thi. Chương trình kết thúc.")
+        return
         
-        if not latest_threads:
-            print("\n(!) Không thể lấy danh sách đề thi. Chương trình kết thúc.")
-            return
-            
         print(f"\n[*] Sẽ tiến hành cào ảnh và comments từ {len(latest_threads)} đề thi mới nhất.")
-        
-        for thread_info in latest_threads:
+    
+    for thread_info in latest_threads:
             download_images_with_comments_from_thread(session, thread_info)
         
     print("\n--- HOÀN TẤT TOÀN BỘ QUÁ TRÌNH ---")
